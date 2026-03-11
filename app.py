@@ -1,7 +1,9 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # <--- 1. Agregamos la importación
 import swisseph as swe
 
 app = Flask(__name__)
+CORS(app)  # <--- 2. Habilitamos CORS para toda la app
 
 def calcular_carta_ultra_precisa(año, mes, dia, hora_local, minuto, lat, lon, offset_utc):
     swe.set_ephe_path('')
@@ -49,6 +51,7 @@ def calcular_carta_ultra_precisa(año, mes, dia, hora_local, minuto, lat, lon, o
 @app.route('/calcular', methods=['GET'])
 def calcular():
     try:
+        # Nota: Si el agente tiene problemas con la 'ñ', podrías cambiar esto a 'anio'
         año = int(request.args.get('año'))
         mes = int(request.args.get('mes'))
         dia = int(request.args.get('dia'))
