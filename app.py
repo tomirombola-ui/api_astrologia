@@ -5,7 +5,8 @@ import swisseph as swe
 app = Flask(__name__)
 CORS(app)
 
-# --- CONSTANTES ASTROLÓGICAS ---
+# --- CONFIGURACIÓN Y TABLAS DE REFERENCIA ---
+
 ZODIACO = ["Aries", "Tauro", "Géminis", "Cáncer", "Leo", "Virgo", 
            "Libra", "Escorpio", "Sagitario", "Capricornio", "Acuario", "Piscis"]
 
@@ -22,7 +23,7 @@ MODALIDADES = {
     "Géminis": "Mutable", "Virgo": "Mutable", "Sagitario": "Mutable", "Piscis": "Mutable"
 }
 
-# Dignidades: {Planeta: {'Domicilio': [Signos], 'Exaltación': Signo, 'Caída': Signo, 'Exilio': [Signos]}}
+# Dignidades tradicionales
 DIGNIDADES_MAP = {
     'Sol': {'Dom': ['Leo'], 'Exa': 'Aries', 'Cai': 'Libra', 'Exi': ['Acuario']},
     'Luna': {'Dom': ['Cáncer'], 'Exa': 'Tauro', 'Cai': 'Escorpio', 'Exi': ['Capricornio']},
@@ -33,7 +34,7 @@ DIGNIDADES_MAP = {
     'Saturno': {'Dom': ['Capricornio', 'Acuario'], 'Exa': 'Libra', 'Cai': 'Aries', 'Exi': ['Cáncer', 'Leo']}
 }
 
-# --- FUNCIONES DE APOYO ---
+# --- FUNCIONES AUXILIARES ---
 
 def get_dignidad(planeta, signo):
     if planeta not in DIGNIDADES_MAP: return "Neutral"
@@ -48,36 +49,37 @@ def formatear_pos(longitud):
     idx = int(longitud / 30)
     g = int(longitud % 30)
     m = int((longitud % 1) * 60)
-    return ZODIACO[idx], f"{ZODIACO[idx]} {g:02d}°{m:02d}'"
+    s = int(((longitud % 1) * 60 % 1) * 60)
+    return ZODIACO[idx], f"{ZODIACO[idx]} {g:02d}°{m:02d}'{s:02d}\""
 
 def calcular_aspectos(posiciones):
-    # Aspectos mayores y sus orbes permitidos
-    tipos_aspectos = {0: ("Conjunción", 8), 180: ("Oposición", 8), 120: ("Trígono", 8), 90: ("Cuadratura", 7), 60: ("Sextil", 5)}
+    # Tipos de aspectos: (Ángulo, Orbe permitido)
+    tipos = {0: ("Conjunción", 8), 180: ("Oposición", 8), 120: ("Trígono", 8), 90: ("Cuadratura", 7), 60: ("Sextil", 5)}
     encontrados = []
-    nombres = list(posiciones.keys())
+    nombres = [n for n in posiciones.keys() if "Casa" not in n and n not in ["Ascendente", "Medio Cielo"]]
     
     for i in range(len(nombres)):
         for j in range(i + 1, len(nombres)):
             p1, p2 = nombres[i], nombres[j]
-            # No calcular aspectos con casas o nodos para no saturar, o filtrar según preferencia
-            if "Casa" in p1 or "Casa" in p2: continue
-            
             diff = abs(posiciones[p1]['long'] - posiciones[p2]['long'])
             if diff > 180: diff = 360 - diff
             
-            for angulo, (tipo, orbe) in tipos_aspectos.items():
-                distancia_al_aspecto = abs(diff - angulo)
-                if distancia_al_aspecto <= orbe:
+            for angulo, (tipo, max_orbe) in tipos.items():
+                orbe_actual = abs(diff - angulo)
+                if orbe_actual <= max_orbe:
                     encontrados.append({
-                        "p1": p1, "p2": p2, "tipo": tipo, "orbe": round(distancia_al_aspecto, 2)
+                        "p1": p1, "p2": p2, "tipo": tipo, "orbe": round(orbe_actual, 2)
                     })
     return encontrados
 
-# --- LÓGICA PRINCIPAL ---
+# --- LÓGICA CORE ---
 
-def generar_reporte_astrologico(año, mes, dia, hora, minuto, lat, lon, offset):
-    swe.set_ephe_path('')
-    jd = swe.julday(año, mes, dia, (hora + minuto/60.0) - offset, swe.GREG_CAL)
+def generar_analisis_completo(año, mes, dia, hora, minuto, lat, lon, offset):
+    swe.set_ephe_path('') # Usa efemérides integradas (1900-2050)
+    
+    # Cálculo del Julian Day
+    hora_utc = (hora + minuto/60.0) - offset
+    jd = swe.julday(año, mes, dia, hora_utc, swe.GREG_CAL)
     
     planetas_ids = {
         'Sol': swe.SUN, 'Luna': swe.MOON, 'Mercurio': swe.MERCURY, 'Venus': swe.VENUS,
@@ -85,59 +87,64 @@ def generar_reporte_astrologico(año, mes, dia, hora, minuto, lat, lon, offset):
         'Urano': swe.URANUS, 'Neptuno': swe.NEPTUNE, 'Plutón': swe.PLUTO, 'Nodo Norte': swe.MEAN_NODE
     }
 
-    raw_data = {}
+    datos_crudos = {}
     balance = {"Elementos": {"Fuego": 0, "Tierra": 0, "Aire": 0, "Agua": 0}, 
                "Modalidades": {"Cardinal": 0, "Fijo": 0, "Mutable": 0}}
 
-    # 1. Posiciones y Dignidades
+    # 1. Posiciones, Dignidades y Balance
     for nombre, pid in planetas_ids.items():
-        pos, ret = swe.calc_ut(jd, pid, swe.FLG_SWIEPH)
-        signo, legible = formatear_pos(pos[0])
-        rx = " (Rx)" if pos[3] < 0 else ""
+        res, ret = swe.calc_ut(jd, pid, swe.FLG_SWIEPH)
+        longitud = res[0]
+        velocidad = res[3]
+        signo, legible = formatear_pos(longitud)
+        rx = " (Rx)" if velocidad < 0 else ""
         
-        raw_data[nombre] = {
+        datos_crudos[nombre] = {
             "posicion": legible + rx,
-            "long": pos[0],
+            "long": longitud,
             "signo": signo,
-            "dignidad": get_dignidad(nombre, signo),
-            "retrogrado": pos[3] < 0
+            "dignidad": get_dignidad(nombre, signo)
         }
         
-        # Balance (solo planetas, no nodos)
+        # El balance energético suele excluir a los Nodos
         if nombre != 'Nodo Norte':
             balance["Elementos"][ELEMENTOS[signo]] += 1
             balance["Modalidades"][MODALIDADES[signo]] += 1
 
-    # 2. Casas
+    # 2. Casas y Ángulos
     casas, asmc = swe.houses_ex(jd, lat, lon, b'P')
-    raw_data['Ascendente'] = {"posicion": formatear_pos(asmc[0])[1], "long": asmc[0]}
-    raw_data['Medio Cielo'] = {"posicion": formatear_pos(asmc[1])[1], "long": asmc[1]}
-    
+    datos_crudos['Ascendente'] = {"posicion": formatear_pos(asmc[0])[1], "long": asmc[0]}
+    datos_crudos['Medio Cielo'] = {"posicion": formatear_pos(asmc[1])[1], "long": asmc[1]}
     for i in range(12):
-        raw_data[f'Casa {i+1}'] = {"posicion": formatear_pos(casas[i])[1], "long": casas[i]}
+        datos_crudos[f'Casa {i+1}'] = {"posicion": formatear_pos(casas[i])[1], "long": casas[i]}
 
-    # 3. Aspectos
-    aspectos = calcular_aspectos(raw_data)
+    # 3. Cálculo de Aspectos
+    aspectos_lista = calcular_aspectos(datos_crudos)
 
+    # 4. Construcción del JSON Final
     return {
-        "puntos_celestes": {k: v['posicion'] for k, v in raw_data.items() if 'posicion' in v},
-        "dignidades": {k: v['dignidad'] for k, v in raw_data.items() if 'dignidad' in v},
-        "aspectos": aspectos,
+        "puntos_celestes": {k: v['posicion'] for k, v in datos_crudos.items()},
+        "dignidades": {k: v['dignidad'] for k, v in datos_crudos.items() if 'dignidad' in v},
+        "aspectos": aspectos_lista,
         "balance_energetico": balance
     }
+
+# --- RUTAS FLASK ---
 
 @app.route('/calcular', methods=['GET'])
 def calcular():
     try:
-        a = request.args
-        res = generar_reporte_astrologico(
-            int(a.get('año')), int(a.get('mes')), int(a.get('dia')),
-            int(a.get('hora')), int(a.get('minuto')),
-            float(a.get('lat')), float(a.get('lon')), float(a.get('offset'))
+        # Usamos .get() para evitar errores si falta algún parámetro
+        args = request.args
+        resultado = generar_analisis_completo(
+            int(args.get('año')), int(args.get('mes')), int(args.get('dia')),
+            int(args.get('hora')), int(args.get('minuto')),
+            float(args.get('lat')), float(args.get('lon')), float(args.get('offset'))
         )
-        return jsonify(res)
+        return jsonify(resultado)
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": f"Error en los parámetros o en el cálculo: {str(e)}"}), 400
 
 if __name__ == '__main__':
+    # Puerto 10000 es el estándar de Render
     app.run(host='0.0.0.0', port=10000)
